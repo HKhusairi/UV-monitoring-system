@@ -1,0 +1,173 @@
+//Hardware pin definitions
+int UVOUT = A0; //Output from the sensor
+int REF_3V3 = A1; //3.3V power on the Arduino board
+
+#include <SPI.h>
+#include <WiFi101.h>
+#include <ThingSpeak.h>
+ 
+char ssid[] = "WiFiName"; //  your network SSID (name)
+char pass[] = "WiFipsswrd"; // your network password
+
+int status = WL_IDLE_STATUS;
+
+// Initialize the Wifi client library
+WiFiClient client;
+
+// ThingSpeak Settings
+char server[] = "api.thingspeak.com";
+String writeAPIKey = "4QC3WMOBQ9QW9M8T"; //change to second channel
+
+unsigned long lastConnectionTime = 0; // track the last connection time
+const unsigned long postingInterval = 60L * 1000L; // post data every 60 seconds
+
+float totalUvDose = 0;
+
+void setup()
+{Serial.begin(9600);
+  pinMode(UVOUT, INPUT);
+  pinMode(REF_3V3, INPUT);
+
+  while (!Serial) 
+  {
+    ; // wait for serial port to connect. Needed for native USB port only
+  }
+  // check for the presence of the shield:
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("WiFi shield not present");
+    // don't continue:
+    while (true);
+  }
+  // attempt to connect to Wifi network:
+  while (status != WL_CONNECTED) 
+  {
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.println(ssid);
+    //Connect to WPA/WPA2 network.Change this line if using open/WEP network
+    status = WiFi.begin(ssid, pass);
+
+    delay(10000); // wait 10 seconds for connection
+  }
+  Serial.println("Connected to wifi");
+  printWifiStatus();
+}
+
+void loop()
+{
+  int uvLevel = averageAnalogRead(UVOUT);
+  int refLevel = averageAnalogRead(REF_3V3);
+
+  //Use the 3.3V power pin as a reference to get a very accurate output value from sensor
+  float outputVoltage =  3.3 / refLevel * uvLevel;
+  float uvIrradiance = mapfloat(outputVoltage, 0.99, 2.8, 0.0, 15.0); //Convert the voltage to a UV irradiance level for ML8511
+//Use float uvIrradiance = mapfloat(outputVoltage, 1.01, 4.6, 2.97, 14.0); for GUVA-S12SD
+
+  float uvDose = uvIrradiance * 10;
+  totalUvDose = totalUvDose + uvDose;
+
+  Serial.print(" / UV Irradiance (mW/cm^2): ");
+  Serial.print(uvIrradiance);
+  Serial.print(" / UV Dose (mJ/cm^2): ");
+  Serial.print(totalUvDose);
+  
+  Serial.println();
+  delay(10000);
+  // if interval time has passed since the last connection, then connect again and send data
+  if (millis() - lastConnectionTime > postingInterval) {
+    httpRequest();
+  }
+}
+
+void httpRequest() {
+  
+  int uvLevel = averageAnalogRead(UVOUT);
+  int refLevel = averageAnalogRead(REF_3V3);
+
+  //Use the 3.3V power pin as a reference to get a very accurate output value from sensor
+  float outputVoltage =  3.3 / refLevel * uvLevel;
+
+  float uvIrradiance = mapfloat(outputVoltage, 0.99, 2.8, 0.0, 15.0); //Convert the voltage to a UV irradiance level
+
+  float uvDose = uvIrradiance * 10;
+  totalUvDose = totalUvDose + uvDose;
+ 
+  // read Wi-Fi signal strength (rssi)
+  long rssi = WiFi.RSSI();
+  
+  // create data string to send to ThingSpeak
+  String data = String("field1=" + String(uvIrradiance, DEC) + "&field2=" + String(rssi, DEC)+ "&field3=" + String(totalUvDose, DEC)); 
+  
+  // close any connection before sending a new request
+  client.stop(); 
+  
+  // POST data to ThingSpeak
+  if (client.connect(server, 80)) {
+    client.println("POST /update HTTP/1.1");
+    client.println("Host: api.thingspeak.com");
+    client.println("Connection: close");
+    client.println("User-Agent: ArduinoWiFi/1.1");
+    client.println("X-THINGSPEAKAPIKEY: 4QC3WMOBQ9QW9M8T"); // Insert API key
+    client.println("Content-Type: application/x-www-form-urlencoded");
+    client.print("Content-Length: ");
+    client.print(data.length());
+    client.print("\n\n");
+    client.print(data);
+    Serial.println("Success: Data sent to Thingspeak");
+    lastConnectionTime = millis();
+  }
+
+  else {
+    Serial.println("Connecting: Trying to send data to Thingspeak");
+    lastConnectionTime = millis();   
+    }
+}
+
+
+
+int averageAnalogRead(int pinToRead)
+{
+  byte numberOfReadings = 8;
+  unsigned int runningValue = 0; 
+
+  for(int x = 0 ; x < numberOfReadings ; x++)
+    runningValue += analogRead(pinToRead);
+  runningValue /= numberOfReadings;
+
+  return(runningValue);  
+}
+//Takes an average of readings on a given pin
+//Returns the average
+
+
+
+//The Arduino Map function but for floats
+//From: http://forum.arduino.cc/index.php?topic=3922.0
+float mapfloat(float x, float in_min, float in_max, float out_min, float out_max)
+{
+  if (((x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)<= 0.00){
+
+    return 0.00;
+  }
+  else {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+  }
+}
+
+
+void printWifiStatus() {
+  // print the SSID of the network you're attached to:
+  Serial.print("SSID: ");
+  Serial.println(WiFi.SSID());
+
+  // print your WiFi shield's IP address:
+  IPAddress ip = WiFi.localIP();
+  Serial.print("IP Address: ");
+  Serial.println(ip);
+
+  // print the received signal strength:
+  long rssi = WiFi.RSSI();
+  Serial.print("signal strength (RSSI):");
+  Serial.print(rssi);
+  Serial.println(" dBm");
+}
+
